@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - index.html
+      - assets/**
       - .github/workflows/deploy.yml
   workflow_dispatch:
 
@@ -22,6 +23,8 @@ env:
   REMOTE_DIR: www/mind-the-gap
   # Allowlist: alleen deze bestanden worden geüpload. Geen --delete, geen mappen-sync.
   DEPLOY_FILES: index.html
+  # Statische media (stem en beeld). Alleen deze mappen, alleen *.mp3 en *.jpg, nooit verwijderen.
+  DEPLOY_DIRS: assets/audio assets/noa
   LIVE_URL: https://creativestories.nl/mind-the-gap/
   # Publieke host key van creb34.ssh.transip.me (geen geheim). Voorkomt man-in-the-middle.
   KNOWN_HOST: "creb34.ssh.transip.me ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBX9g6AauCM63AVd6pm7ErqNybN98RTeekFvhnq0M86+"
@@ -36,6 +39,7 @@ jobs:
       - name: Controleer lokale bestanden
         run: |
           for f in $DEPLOY_FILES; do test -f "$f" || { echo "Ontbreekt: $f"; exit 1; }; done
+          for d in $DEPLOY_DIRS; do test -d "$d" && ls "$d" | grep -q . || { echo "Map leeg of ontbreekt: $d"; exit 1; }; done
           grep -q "De brief die niemand begreep" index.html
 
       - name: SSH voorbereiden
@@ -78,6 +82,10 @@ jobs:
         run: |
           set -eu
           {
+            # Een leidend '-' laat sftp doorgaan als de map al bestaat.
+            printf -- '-mkdir %s/assets\n' "$REMOTE_DIR"
+            for d in $DEPLOY_DIRS; do printf -- '-mkdir %s/%s\n' "$REMOTE_DIR" "$d"; done
+            for d in $DEPLOY_DIRS; do for f in "$d"/*.mp3 "$d"/*.jpg; do [ -f "$f" ] && printf 'put %s %s/%s\n' "$f" "$REMOTE_DIR" "$f"; done; done
             for f in $DEPLOY_FILES; do printf 'put %s %s/%s\n' "$f" "$REMOTE_DIR" "$f"; done
           } | sftp -b - -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
               -i "$HOME/.ssh/deploy_key" "$SFTP_USER@$SFTP_HOST"

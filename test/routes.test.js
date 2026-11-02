@@ -7,8 +7,11 @@ const code=html.match(/<script>([\s\S]*)<\/script>/)[1];
 // Minimale DOM-stub: de test raakt alleen de logica, niet de weergave.
 const stub=new Proxy(function(){},{get:(t,k)=>k===Symbol.toPrimitive?()=>'':stub,apply:()=>stub,set:()=>true});
 const ctx=vm.createContext({document:stub,window:stub,localStorage:{getItem:()=>null,setItem(){}},matchMedia:()=>({matches:true})});
-vm.runInContext(code+';globalThis.api={ROUNDS,fresh,advance,debrief,LETTERS}',ctx);
-const {ROUNDS,fresh,advance,debrief,LETTERS}=ctx.api;
+vm.runInContext(code+';globalThis.api={ROUNDS,fresh,advance,debrief,LETTERS,MOODS,sentences,hash}',ctx);
+const {ROUNDS,fresh,advance,debrief,LETTERS,MOODS,sentences,hash}=ctx.api;
+const root=path.join(__dirname,'..');
+const audioFor=t=>sentences(t).map(x=>`assets/audio/noa-${hash(x)}.mp3`);
+const missing=new Set(),clips=new Set();
 
 const PROMISE=/u zei|vandaag (nog )?opgelost|vandaag toch oplossen|ervoor zou zorgen|eerst zei u/i;
 const OVERSIGHT=/pagina 3|pagina 2 van 3|mist er|er mist|ontbreekt/i;
@@ -23,7 +26,8 @@ for(const a of [0,1,2])for(const b of [0,1,2])for(const c of [0,1,2]){
  const s=fresh();
  [a,b,c].forEach((pick,turn)=>{
   const before={promises:s.promises,found:s.foundAt!==null,handedOff:s.handedOff,trust:s.trust};
-  const said=ROUNDS[turn].said(s);
+  const said=ROUNDS[turn].said(s),mood=ROUNDS[turn].mood(s);
+  check(mood in MOODS&&fs.existsSync(path.join(root,`assets/noa/${mood}.jpg`)),route,`ronde ${turn+1} beeld ontbreekt voor stemming ${mood}`);
   const out=advance(s,pick);
   const after={found:s.foundAt!==null};
   for(const [k,v] of Object.entries({said,cue:out.cue,noa:out.noa,note:out.note}))
@@ -39,6 +43,11 @@ for(const a of [0,1,2])for(const b of [0,1,2])for(const c of [0,1,2]){
   if(OVERSIGHT.test(said))check(before.found,route,`ronde ${turn+1} said noemt ontbrekende pagina voor ontdekking: ${said}`);
   if(OVERSIGHT.test(out.noa))check(after.found,route,`ronde ${turn+1} noa noemt ontbrekende pagina zonder ontdekking: ${out.noa}`);
   if(after.found&&!before.found)check(OVERSIGHT.test(out.noa)&&OVERSIGHT.test(out.note),route,`ronde ${turn+1} ontdekking niet zichtbaar in reactie en notitie`);
+  check(out.mood in MOODS&&fs.existsSync(path.join(root,`assets/noa/${out.mood}.jpg`)),route,`ronde ${turn+1} reactiebeeld ontbreekt: ${out.mood}`);
+  check(out.photo===undefined||['full','cropped'].includes(out.photo),route,`ongeldige foto: ${out.photo}`);
+  check((out.photo==='full')===(after.found&&!before.found),route,`foto 'full' hoort precies bij het moment van ontdekking (ronde ${turn+1})`);
+  check(out.photo!=='cropped'||!after.found,route,'afgesneden foto terwijl de pagina al ontdekt is');
+  for(const t of [said,out.noa])for(const f of audioFor(t)){clips.add(f);if(!fs.existsSync(path.join(root,f)))missing.add(`${f} <- ${t}`)}
   if(turn===1)r2said.add(said);
   if(turn===2){r3said.add(said);r3noa.add(out.noa)}
  });
@@ -65,5 +74,9 @@ check(r2said.size===3,'dekking',`ronde 2 heeft ${r2said.size} van 3 varianten be
 check([...r2said].some(t=>/Ik weet niet waarom ik dit aan u uitleg/.test(t)),'dekking','gesloten Noa-reactie in ronde 2 is onbereikbaar');
 check(titles.size===6,'dekking',`${titles.size} van 6 nabesprekingstitels bereikbaar: ${[...titles].join(' | ')}`);
 
+check(missing.size===0,'audio',`opnames ontbreken: ${[...missing].join(' | ')}`);
+const orphans=fs.readdirSync(path.join(root,'assets/audio')).filter(f=>!clips.has(`assets/audio/${f}`));
+check(orphans.length===0,'audio',`opnames zonder zin: ${orphans.join(', ')}`);
+
 if(failures.length){console.error(`${failures.length} probleem(en):\n- `+failures.join('\n- '));process.exit(1)}
-console.log(`OK: ${routes} routes · ${titles.size} nabesprekingstitels · ${r2said.size} varianten ronde 2 · ${r3said.size} varianten ronde 3 (Noa) · ${r3noa.size} reacties ronde 3`);
+console.log(`OK: ${clips.size} opnames · ${routes} routes · ${titles.size} nabesprekingstitels · ${r2said.size} varianten ronde 2 · ${r3said.size} varianten ronde 3 (Noa) · ${r3noa.size} reacties ronde 3`);
