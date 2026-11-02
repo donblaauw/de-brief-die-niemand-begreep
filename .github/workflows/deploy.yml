@@ -1,0 +1,91 @@
+name: Deploy naar TransIP (mind-the-gap)
+
+# Fase 1: alleen handmatig starten (Actions → Deploy → Run workflow).
+# Automatische publicatie bij push naar main wordt pas aangezet na een geslaagde testrun.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-mind-the-gap
+  cancel-in-progress: false
+
+env:
+  # Vast doelpad, relatief aan de SFTP-home van het hostingpakket. Nooit www/ zelf of hoger.
+  REMOTE_DIR: www/mind-the-gap
+  # Allowlist: alleen deze bestanden worden geüpload. Geen --delete, geen mappen-sync.
+  DEPLOY_FILES: index.html
+  LIVE_URL: https://creativestories.nl/mind-the-gap/
+  # Publieke host key van creb34.ssh.transip.me (geen geheim). Voorkomt man-in-the-middle.
+  KNOWN_HOST: "creb34.ssh.transip.me ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBX9g6AauCM63AVd6pm7ErqNybN98RTeekFvhnq0M86+"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Controleer lokale bestanden
+        run: |
+          for f in $DEPLOY_FILES; do test -f "$f" || { echo "Ontbreekt: $f"; exit 1; }; done
+          grep -q "De brief die niemand begreep" index.html
+
+      - name: SSH voorbereiden
+        env:
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+        run: |
+          set -eu
+          test -n "$SFTP_KEY" && test -n "$SFTP_HOST"
+          [ "$SFTP_HOST" = "creb34.ssh.transip.me" ] || { echo "Onverwacht host"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SFTP_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOST" > ~/.ssh/known_hosts
+
+      - name: Controleer doelmap en maak back-up van live-versie
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+        run: |
+          set -eu
+          mkdir -p backup
+          SFTP="sftp -b - -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i $HOME/.ssh/deploy_key $SFTP_USER@$SFTP_HOST"
+          # Alleen-lezen: bestaat de map en staat er een index.html?
+          printf 'ls %s/index.html\n' "$REMOTE_DIR" | $SFTP
+          printf 'get -R %s/* backup/\n' "$REMOTE_DIR" | $SFTP
+          test -s backup/index.html
+
+      - name: Bewaar back-up als artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-live-${{ github.run_number }}
+          path: backup/
+          retention-days: 30
+
+      - name: Upload (alleen allowlist, geen delete)
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+        run: |
+          set -eu
+          {
+            for f in $DEPLOY_FILES; do printf 'put %s %s/%s\n' "$f" "$REMOTE_DIR" "$f"; done
+          } | sftp -b - -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -i "$HOME/.ssh/deploy_key" "$SFTP_USER@$SFTP_HOST"
+
+      - name: Controleer dat live gelijk is aan de repository
+        run: |
+          set -eu
+          sleep 3
+          want=$(sha256sum index.html | cut -d' ' -f1)
+          got=$(curl -fsS "$LIVE_URL?cb=$GITHUB_RUN_ID" | sha256sum | cut -d' ' -f1)
+          [ "$want" = "$got" ] || { echo "Live wijkt af van index.html"; exit 1; }
+          echo "Live komt overeen met repository."
+
+      - name: Sleutel opruimen
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
