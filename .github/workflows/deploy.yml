@@ -1,8 +1,13 @@
 name: Deploy naar TransIP (mind-the-gap)
 
-# Fase 1: alleen handmatig starten (Actions → Deploy → Run workflow).
-# Automatische publicatie bij push naar main wordt pas aangezet na een geslaagde testrun.
+# Fase 2: testrun geslaagd, dus automatische publicatie bij push naar main.
+# Handmatig starten (Actions → Deploy → Run workflow) blijft mogelijk.
 on:
+  push:
+    branches: [main]
+    paths:
+      - index.html
+      - .github/workflows/deploy.yml
   workflow_dispatch:
 
 permissions:
